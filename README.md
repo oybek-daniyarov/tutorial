@@ -135,7 +135,7 @@ class PostResponseData extends Data
             slug: $post->slug,
             isPublished: $post->is_published,
             author: UserReferenceData::fromModel($post->user),
-            commentsCount: $post->comments()->count(),
+            commentsCount: $post->comments->count(),
             createdAt: $post->created_at->toISOString(),
             updatedAt: $post->updated_at->toISOString(),
         );
@@ -153,6 +153,7 @@ Controllers return Data objects directly to the frontend:
 namespace App\Http\Controllers;
 
 use App\Data\Posts\PostResponseData;
+use App\Data\Comments\CommentResponseData;
 use App\Models\Post;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -161,15 +162,25 @@ class PostController extends Controller
 {
     public function index(): Response
     {
-        $posts = Post::with(['user', 'comments'])
+        // Eager load relationships to prevent N+1 queries
+        $posts = Post::with(['user', 'comments.user'])
             ->where('is_published', true)
             ->latest()
             ->paginate(10);
 
-        $postsData = $posts->through(fn (Post $post) => PostResponseData::fromModel($post));
-
         return Inertia::render('Posts/Index', [
-            'posts' => $postsData,
+            'posts' => PostResponseData::collect($posts),
+        ]);
+    }
+
+    public function show(Post $post): Response
+    {
+        // Load nested relationships for comments and their authors
+        $post->load(['user', 'comments.user']);
+
+        return Inertia::render('Posts/Show', [
+            'post' => PostResponseData::fromModel($post),
+            'comments' => CommentResponseData::collect($post->comments),
         ]);
     }
 }
@@ -206,30 +217,82 @@ updatedAt: string;
 React components use the generated types for full type safety with Inertia v2 Form components:
 
 ```tsx
-import { PostResponseData } from '@/types/generated'
+import { Head, Link } from '@inertiajs/react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import PostController from '@/actions/App/Http/Controllers/PostController'
+import { Pagination } from '@/types'
+import { Plus, MessageCircle, Calendar } from 'lucide-react'
 
 interface Props {
-  posts: {
-    data: PostResponseData[]
-    links: any[]
-  }
+  posts: Pagination<App.Data.Posts.PostResponseData>
 }
 
 export default function PostsIndex({ posts }: Props) {
   return (
-    <div>
-      {posts.data.map((post) => (
-        <div key={post.id}>
-          <h2>{post.title}</h2>
-          <p>By {post.author.name}</p>
-          <p>{post.commentsCount} comments</p>
-          <Link href={PostController.show({ post: post.id }).url}>
-            Read more
-          </Link>
+    <>
+      <Head title="Posts" />
+      
+      <div className="flex h-full flex-1 flex-col gap-4 overflow-x-auto rounded-xl p-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl font-bold">Posts</h1>
+          <Button asChild>
+            <Link href={PostController.create().url}>
+              <Plus className="mr-2 h-4 w-4" />
+              Create New Post
+            </Link>
+          </Button>
         </div>
-      ))}
-    </div>
+        
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {posts.data.map((post) => (
+            <Card key={post.id} className="hover:shadow-lg transition-shadow">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center space-x-2">
+                    <Avatar className="h-6 w-6">
+                      <AvatarFallback className="text-xs">
+                        {post.author.name.split(' ').map(n => n[0]).join('')}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="text-sm text-muted-foreground">{post.author.name}</span>
+                  </div>
+                  <div className="flex items-center text-sm text-muted-foreground">
+                    <Calendar className="mr-1 h-3 w-3" />
+                    {new Date(post.createdAt).toLocaleDateString()}
+                  </div>
+                </div>
+                
+                <CardTitle className="text-xl line-clamp-2">
+                  {post.title}
+                </CardTitle>
+              </CardHeader>
+              
+              <CardContent className="pt-0">
+                <p className="text-muted-foreground mb-4 line-clamp-3">
+                  {post.content}
+                </p>
+                
+                <div className="flex items-center justify-between">
+                  <Badge variant="secondary" className="flex items-center">
+                    <MessageCircle className="mr-1 h-3 w-3" />
+                    {post.commentsCount} {post.commentsCount === 1 ? 'comment' : 'comments'}
+                  </Badge>
+                  
+                  <Button variant="ghost" size="sm" asChild>
+                    <Link href={PostController.show({ post: post.id }).url}>
+                      Read more →
+                    </Link>
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </>
   )
 }
 ```
